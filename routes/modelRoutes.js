@@ -1,15 +1,21 @@
-import express from "express";
-import { callHFModel } from "./services/hfService.js";
-
+// routes/modelRoutes.js
+const express = require("express");
 const router = express.Router();
 
-router.post("/predict", async (req, res) => {
+// Correct relative path: routes/ -> services/
+const { callHFModel } = require("../services/hfservice");
+
+/**
+ * POST /api/model/predict
+ * Body: { inputs: ..., parameters?: ... }
+ */
+router.post("/predict", async (req, res, next) => {
   try {
     const result = await callHFModel(req.body);
-    res.json({ success: true, result });
-  } catch (error) {
-    res.status(500).json({ success: false, error: "Inference failed" });
+    return res.status(200).json(result);
+  } catch (err) {
+    return next(err);
   }
 });
 
-export default router;
+module.exports = router;

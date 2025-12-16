@@ -34,3 +34,6 @@ build/
 
 # MongoDB dump folders
 dump/
+
+app/_pycache__
+__pycache__
