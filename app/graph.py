@@ -13,7 +13,16 @@ from langchain_core.tools import tool
 from langgraph.graph import StateGraph, START, END, MessagesState
 from langgraph.prebuilt import ToolNode, tools_condition
 
-from tools import tavily_search, stub_evidence
+from tools import (
+    tavily_search,
+    stub_evidence,
+    classify_query,
+    extract_entities,
+    normalize_evidence,
+    generate_graph_dot,
+    clinicaltrials_search,
+    render_dot_to_png_base64
+)
 
 # Load environment variables
 load_dotenv()
@@ -34,9 +43,63 @@ def stub_evidence_tool(query: str) -> List[Dict[str, Any]]:
     ev = stub_evidence(query=query)
     return [e.model_dump() for e in ev]
 
+@tool("classify_query")
+def classify_query_tool(query: str) -> Dict[str, Any]:
+    """Classify query to decide which tools are needed."""
+    return classify_query(query)
 
-TOOLS = [web_search_tool, stub_evidence_tool]
 
+@tool("extract_entities")
+def extract_entities_tool(query: str) -> Dict[str, Optional[str]]:
+    """Extract drug and indication from query."""
+    return extract_entities(query)
+
+
+@tool("normalize_evidence")
+def normalize_evidence_tool(evidence: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Dedupe and clean evidence."""
+    return normalize_evidence(evidence)
+
+
+@tool("generate_graph_dot")
+def generate_graph_dot_tool(
+    title: str,
+    nodes: List[Dict[str, str]],
+    edges: List[Dict[str, str]],
+    rankdir: str = "LR",
+) -> str:
+    """
+    Generate Graphviz DOT.
+    IMPORTANT: Use this tool instead of writing DOT directly.
+    """
+    return generate_graph_dot(
+        title=title,
+        nodes=nodes,
+        edges=edges,
+        rankdir=rankdir,
+    )
+
+@tool("clinicaltrials_search")
+def clinicaltrials_search_tool(drug: str, indication: str, max_results: int = 5) -> List[Dict[str, Any]]:
+    """Search ClinicalTrials.gov (Tavily-based MVP)."""
+    ev = clinicaltrials_search(drug=drug, indication=indication, max_results=max_results)
+    return [e.model_dump() for e in ev]
+
+@tool("render_dot_to_png_base64")
+def render_dot_to_png_base64_tool(dot: str) -> Dict[str, Any]:
+    """Render DOT to PNG (base64). Optional dependency on graphviz."""
+    return render_dot_to_png_base64(dot)
+
+TOOLS = [
+    web_search_tool,
+    stub_evidence_tool,
+    classify_query_tool,
+    extract_entities_tool,
+    normalize_evidence_tool,
+    generate_graph_dot_tool,
+    clinicaltrials_search_tool,
+    render_dot_to_png_base64_tool
+]
 
 # -----------------------------
 # LangGraph State
@@ -47,8 +110,9 @@ class PharmAIState(MessagesState):
     decision_brief: str
     citations: List[str]
     confidence_score: float
-    tool_loops: int  # safety counter
-
+    tool_loops: int                    # safety counter
+    diagram_png_base64: Optional[str]  # <-- add
+    diagram_dot: Optional[str]         # <-- optional
 
 # -----------------------------
 # Guardrails + Prompts
@@ -56,17 +120,28 @@ class PharmAIState(MessagesState):
 SYSTEM_PROMPT = """You are PharmAI Navigator, an evidence-grounded diligence assistant for drug/asset evaluation.
 
 Your job:
-Turn a query like "Assess {Drug} for {Indication}" into a decision-grade brief.
+Turn a query like "Assess {Drug} for {Indication}" into a decision-grade brief OR structured output.
+
+CRITICAL TOOL USAGE RULES:
+- If the user asks for a diagram, flow, architecture, graph, visualization, or Graphviz:
+  → You MUST call `generate_graph_dot`.
+  → You MUST NOT write Graphviz DOT directly in your response.
+  → If the user asks for an image/PNG, call `render_dot_to_png_base64` AFTER you get DOT.
+- If the user asks for trials / phases / NCT IDs / endpoints:
+  → Prefer calling `extract_entities` then `clinicaltrials_search`.
+- If the user asks for factual claims (approvals, safety, pricing, patents, market):
+  → Prefer calling `web_search`.
 
 Guardrails (STRICT):
-- Do NOT invent specific facts (approval dates, trial names, endpoints, statistics, patent expiry) without evidence.
-- If you state a concrete number/date/claim, it MUST be supported by tool evidence (web_search output).
-- Prefer using tools for factual claims. If tools are unavailable/insufficient, say so clearly and list what is missing.
+- Do NOT invent specific facts (approval dates, trial names, endpoints, statistics, patent expiry).
+- Any concrete number/date/claim MUST be supported by tool evidence.
+- If evidence is insufficient, clearly list Evidence Gaps.
 - Be concise, structured, and decision-oriented.
 - Avoid medical advice; present as diligence/analysis.
 
 Citations policy:
-- The final response's "Citations" section is handled by the system. Do not create your own custom citation list.
+- The final response's "Citations" section is handled by the system.
+- Do NOT create your own citation list.
 """
 
 FINAL_PROMPT = """Write the FINAL decision brief with these sections:
@@ -101,7 +176,10 @@ def _build_model() -> ChatAnthropic:
     return ChatAnthropic(
         model=model_name,
         temperature=0.2,
-        max_tokens=1200,
+        max_tokens=10000,
+        timeout=120,
+        streaming=False,
+        stop=None
     ).bind_tools(TOOLS)
 
 
@@ -215,6 +293,35 @@ def _append_citations_section(brief_text: str, citations: List[str]) -> str:
 
     return text
 
+def capture_diagram(state: PharmAIState) -> Dict[str, Any]:
+    # Find the last ToolMessage (most recent tool output)
+    last_tool = None
+    for m in reversed(state["messages"]):
+        if isinstance(m, ToolMessage):
+            last_tool = m
+            break
+
+    if not last_tool:
+        return {}
+
+    tool_name = getattr(last_tool, "name", "") or ""
+    content = getattr(last_tool, "content", "")
+
+    # If your render tool returns base64 string directly
+    if tool_name == "render_dot_to_png_base64":
+        return {"diagram_png_base64": content}
+
+    # If your generate_graph_dot returns dot string
+    if tool_name == "generate_graph_dot":
+        return {"diagram_dot": content}
+
+    return {}
+
+def route_after_tools(state: PharmAIState) -> str:
+    # If we already have the final diagram artifact, stop.
+    if state.get("diagram_png_base64"):
+        return END
+    return "bump_tool_loop"
 
 # -----------------------------
 # Final Synthesis Node
@@ -258,17 +365,20 @@ def synthesize(state: PharmAIState) -> Dict[str, Any]:
 # Build + Compile Graph
 # -----------------------------
 def build_graph():
+    """
+    Graph with terminal tool detection to stop after diagram rendering.
+    """
     g = StateGraph(PharmAIState)
-
+    
     g.add_node("llm_call", llm_call)
-
-    tool_node = ToolNode(TOOLS)
-    g.add_node("tools", tool_node)
-
+    g.add_node("tools", ToolNode(TOOLS))
+    g.add_node("capture_diagram", capture_diagram)
+    g.add_node("bump_tool_loop", lambda s: {"tool_loops": s.get("tool_loops", 0) + 1})
     g.add_node("synthesize", synthesize)
 
     g.add_edge(START, "llm_call")
-
+    
+    # After LLM: either call tools or synthesize
     g.add_conditional_edges(
         "llm_call",
         tools_condition,
@@ -278,17 +388,23 @@ def build_graph():
         },
     )
 
-    def bump_tool_loop(state: PharmAIState) -> Dict[str, Any]:
-        return {"tool_loops": state.get("tool_loops", 0) + 1}
-
-    g.add_node("bump_tool_loop", bump_tool_loop)
-    g.add_edge("tools", "bump_tool_loop")
+    # After tools: capture diagram data
+    g.add_edge("tools", "capture_diagram")
+    
+    # After capture: check if we should stop (diagram complete) or continue
+    g.add_conditional_edges(
+        "capture_diagram",
+        route_after_tools,
+        {
+            END: END,  # Stop if diagram is complete
+            "bump_tool_loop": "bump_tool_loop",  # Continue otherwise
+        },
+    )
+    
     g.add_edge("bump_tool_loop", "llm_call")
-
     g.add_edge("synthesize", END)
-
+    
     return g.compile()
-
 
 # -----------------------------
 # Test execution
@@ -298,7 +414,10 @@ if __name__ == "__main__":
     graph = build_graph()
     print("Graph compiled successfully!")
 
-    test_query = "Assess donanemab for early Alzheimer's disease"
+    # Test query designed to trigger generate_graph_dot tool
+    #test_query = "Assess semaglutide for obesity"
+    #test_query = "Assess donanemab for early Alzheimer’s disease. Retrieve key clinical trials, summarize efficacy and safety outcomes, normalize the evidence, and generate a system architecture graph showing how PharmAI Navigator evaluates this asset."
+    test_query = "Create a DOT graph showing the relationship between Drug, Indication, Clinical Trials, FDA Approval, and Market Launch and render it as png"
     print(f"\nRunning test query: {test_query}")
 
     result = graph.invoke({
@@ -308,9 +427,9 @@ if __name__ == "__main__":
     })
 
     print("\n" + "=" * 60)
-    print("DECISION BRIEF:")
+    print("OUTPUT:")
     print("=" * 60)
-    print(result.get("decision_brief", "No brief generated"))
+    print(result.get("decision_brief", "No output"))
 
     print("\n" + "=" * 60)
     print("CITATIONS (tool-only):")

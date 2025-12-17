@@ -5,6 +5,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from schemas import AgentRunRequest, AgentRunResponse, Message
 from memory import memory_store
 from graph import build_graph
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from fastapi.responses import StreamingResponse
+import json
+import time
+from fastapi.encoders import jsonable_encoder
 
 app = FastAPI(title="PharmAI Navigator (Agentic)", version="0.1.0")
 
@@ -26,6 +31,54 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/session/{session_id}/history")
+def get_session_history(session_id: str):
+    """Get chat history for a session (for testing)."""
+    messages = memory_store.get(session_id)
+    return {
+        "session_id": session_id,
+        "message_count": len(messages),
+        "messages": [{"role": m.role, "content": m.content[:100] + "..." if len(m.content) > 100 else m.content} for m in messages]
+    }
+
+
+@app.delete("/session/{session_id}")
+def clear_session(session_id: str):
+    """Clear a session's history (for testing)."""
+    memory_store.clear(session_id)
+    return {"session_id": session_id, "status": "cleared"}
+
+
+@app.post("/test/echo")
+def test_echo(req: AgentRunRequest):
+    """
+    Lightweight test endpoint - no LLM calls, just tests memory.
+    Echoes back the query and shows session history.
+    """
+    session_id = req.session_id or str(uuid.uuid4())
+    
+    # Get prior history
+    prior = memory_store.get(session_id)
+    
+    # Append user message
+    memory_store.append(session_id, role="user", content=req.query)
+    
+    # Create fake response
+    fake_response = f"Echo: {req.query} (Session has {len(prior)} prior messages)"
+    
+    # Append assistant message
+    memory_store.append(session_id, role="assistant", content=fake_response)
+    
+    return {
+        "session_id": session_id,
+        "decision_brief": fake_response,
+        "prior_message_count": len(prior),
+        "current_message_count": len(memory_store.get(session_id)),
+        "citations": [],
+        "metadata": {"test_mode": True}
+    }
+
+
 @app.post("/run", response_model=AgentRunResponse)
 def run_agent(req: AgentRunRequest):
     # 1) session handling
@@ -38,11 +91,18 @@ def run_agent(req: AgentRunRequest):
     # LangGraph expects state["messages"] as list of LC messages; we pass dict-like messages.
     messages = []
     for m in prior:
-        # role: system/user/assistant/tool (we store user+assistant primarily)
-        messages.append({"role": m.role, "content": m.content})
+        if m.role == "user":
+            messages.append(HumanMessage(content=m.content))
+        elif m.role == "assistant":
+            messages.append(AIMessage(content=m.content))
+        elif m.role == "system":
+            messages.append(SystemMessage(content=m.content))
 
     # 3) append this user query to memory (pre-run)
     memory_store.append(session_id, role="user", content=req.query)
+
+    # Append new user query as LangChain message
+    messages = messages + [HumanMessage(content=req.query)]
 
     # 4) run graph (Mode A synchronous)
     try:
@@ -50,7 +110,7 @@ def run_agent(req: AgentRunRequest):
             {
                 "session_id": session_id,
                 "user_query": req.query,
-                "messages": messages + [{"role": "user", "content": req.query}],
+                "messages": messages,
             }
         )
     except Exception as e:

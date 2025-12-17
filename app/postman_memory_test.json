@@ -1,0 +1,125 @@
+{
+  "info": {
+    "name": "PharmAI Memory Test",
+    "description": "Test session memory without burning API tokens",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "1. Health Check",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "http://localhost:7860/health",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "7860",
+          "path": ["health"]
+        }
+      }
+    },
+    {
+      "name": "2. Test Echo - First Message",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"session_id\": \"test-123\",\n  \"query\": \"Hello, what is semaglutide?\"\n}"
+        },
+        "url": {
+          "raw": "http://localhost:7860/test/echo",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "7860",
+          "path": ["test", "echo"]
+        }
+      }
+    },
+    {
+      "name": "3. Get Session History",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "http://localhost:7860/session/test-123/history",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "7860",
+          "path": ["session", "test-123", "history"]
+        }
+      }
+    },
+    {
+      "name": "4. Test Echo - Follow-up",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"session_id\": \"test-123\",\n  \"query\": \"What are the side effects?\"\n}"
+        },
+        "url": {
+          "raw": "http://localhost:7860/test/echo",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "7860",
+          "path": ["test", "echo"]
+        }
+      }
+    },
+    {
+      "name": "5. Get History Again",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "http://localhost:7860/session/test-123/history",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "7860",
+          "path": ["session", "test-123", "history"]
+        }
+      }
+    },
+    {
+      "name": "6. Clear Session",
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "http://localhost:7860/session/test-123",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "7860",
+          "path": ["session", "test-123"]
+        }
+      }
+    },
+    {
+      "name": "7. Verify Cleared",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "http://localhost:7860/session/test-123/history",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "7860",
+          "path": ["session", "test-123", "history"]
+        }
+      }
+    }
+  ]
+}
