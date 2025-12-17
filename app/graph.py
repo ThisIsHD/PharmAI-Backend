@@ -113,6 +113,7 @@ class PharmAIState(MessagesState):
     tool_loops: int                    # safety counter
     diagram_png_base64: Optional[str]  # <-- add
     diagram_dot: Optional[str]         # <-- optional
+    intent: str  # "simple" | "diligence" | "diagram"
 
 # -----------------------------
 # Guardrails + Prompts
@@ -138,6 +139,10 @@ Guardrails (STRICT):
 - If evidence is insufficient, clearly list Evidence Gaps.
 - Be concise, structured, and decision-oriented.
 - Avoid medical advice; present as diligence/analysis.
+
+Simple Query Rule (CRITICAL):
+- If the user asks a simple definitional question ("what is", "define", "explain") and you can answer without external verification, do NOT call tools and respond directly.
+- Only use tools when you need current/specific data (trials, approvals, patents, market data).
 
 Citations policy:
 - The final response's "Citations" section is handled by the system.
@@ -323,6 +328,36 @@ def route_after_tools(state: PharmAIState) -> str:
         return END
     return "bump_tool_loop"
 
+def preprocess(state: PharmAIState) -> Dict[str, Any]:
+    q = (state.get("user_query") or "").strip().lower()
+
+    if any(k in q for k in ["diagram", "flowchart", "architecture", "graphviz", "dot", "draw"]):
+        return {"intent": "diagram"}
+
+    if re.match(r"^(what is|define|explain)\b", q) and len(q) < 120:
+        return {"intent": "simple"}
+
+    return {"intent": "diligence"}
+
+def route_after_llm(state: PharmAIState):
+    # If query is simple, never call tools/synthesize
+    if state.get("intent") == "simple":
+        return "end_simple"
+
+    # If the model asked for tools, go tools
+    last = state["messages"][-1]
+    if getattr(last, "tool_calls", None):
+        return "tools"
+
+    return "synthesize"
+
+def end_simple(state: PharmAIState) -> Dict[str, Any]:
+    # Return the last assistant content as the final answer
+    last = state["messages"][-1]
+    text = getattr(last, "content", "") if isinstance(getattr(last, "content", ""), str) else str(getattr(last, "content", ""))
+    return {"decision_brief": text, "citations": []}
+
+
 # -----------------------------
 # Final Synthesis Node
 # -----------------------------
@@ -366,25 +401,29 @@ def synthesize(state: PharmAIState) -> Dict[str, Any]:
 # -----------------------------
 def build_graph():
     """
-    Graph with terminal tool detection to stop after diagram rendering.
+    Graph with preprocessing and smart routing.
     """
     g = StateGraph(PharmAIState)
     
+    g.add_node("preprocess", preprocess)
     g.add_node("llm_call", llm_call)
     g.add_node("tools", ToolNode(TOOLS))
     g.add_node("capture_diagram", capture_diagram)
     g.add_node("bump_tool_loop", lambda s: {"tool_loops": s.get("tool_loops", 0) + 1})
     g.add_node("synthesize", synthesize)
+    g.add_node("end_simple", end_simple)
 
-    g.add_edge(START, "llm_call")
+    g.add_edge(START, "preprocess")
+    g.add_edge("preprocess", "llm_call")
     
-    # After LLM: either call tools or synthesize
+    # After LLM: route based on intent and tool calls
     g.add_conditional_edges(
         "llm_call",
-        tools_condition,
+        route_after_llm,
         {
             "tools": "tools",
-            END: "synthesize",
+            "synthesize": "synthesize",
+            "end_simple": "end_simple",
         },
     )
 
@@ -402,6 +441,7 @@ def build_graph():
     )
     
     g.add_edge("bump_tool_loop", "llm_call")
+    g.add_edge("end_simple", END)
     g.add_edge("synthesize", END)
     
     return g.compile()
@@ -417,7 +457,8 @@ if __name__ == "__main__":
     # Test query designed to trigger generate_graph_dot tool
     #test_query = "Assess semaglutide for obesity"
     #test_query = "Assess donanemab for early Alzheimer’s disease. Retrieve key clinical trials, summarize efficacy and safety outcomes, normalize the evidence, and generate a system architecture graph showing how PharmAI Navigator evaluates this asset."
-    test_query = "Create a DOT graph showing the relationship between Drug, Indication, Clinical Trials, FDA Approval, and Market Launch and render it as png"
+    #test_query = "Create a DOT graph showing the relationship between Drug, Indication, Clinical Trials, FDA Approval, and Market Launch and render it as png"
+    test_query = "What is pembrolizumab?"
     print(f"\nRunning test query: {test_query}")
 
     result = graph.invoke({

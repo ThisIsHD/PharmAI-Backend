@@ -1,0 +1,32 @@
+# FastAPI and server
+fastapi
+uvicorn
+python-dotenv
+
+# LangChain and LangGraph
+langchain
+langchain-anthropic
+langchain-core
+langchain-community
+langgraph
+langgraph-checkpoint
+langsmith
+
+# Tools and utilities
+tavily-python
+pydantic
+pydantic-settings
+
+# MongoDB
+pymongo
+motor
+
+# HTTP client
+httpx
+aiohttp
+
+# Graph rendering (optional)
+graphviz
+
+# Other dependencies
+python-multipart

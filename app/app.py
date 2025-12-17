@@ -3,7 +3,7 @@ import uuid
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from schemas import AgentRunRequest, AgentRunResponse, Message
-from memory import memory_store
+from memory_mongo import memory_store  # MongoDB-backed memory
 from graph import build_graph
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from fastapi.responses import StreamingResponse
@@ -28,7 +28,20 @@ GRAPH = build_graph()
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    """Health check with MongoDB status."""
+    mongo_status = "connected"
+    session_count = 0
+    
+    try:
+        session_count = memory_store.get_session_count()
+    except Exception as e:
+        mongo_status = f"error: {str(e)}"
+    
+    return {
+        "status": "ok",
+        "mongodb": mongo_status,
+        "active_sessions": session_count
+    }
 
 
 @app.get("/session/{session_id}/history")
@@ -47,6 +60,23 @@ def clear_session(session_id: str):
     """Clear a session's history (for testing)."""
     memory_store.clear(session_id)
     return {"session_id": session_id, "status": "cleared"}
+
+
+@app.post("/admin/cleanup-sessions")
+def cleanup_old_sessions(days: int = 7):
+    """
+    Admin endpoint to manually cleanup old sessions.
+    (TTL index handles this automatically if configured)
+    """
+    try:
+        deleted = memory_store.cleanup_old_sessions(days=days)
+        return {
+            "status": "ok",
+            "deleted_sessions": deleted,
+            "days": days
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/test/echo")

@@ -1,0 +1,33 @@
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+
+# Testing
+.pytest_cache
+*.log
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Test files
+test_*.py
+test_*.ps1
+*_test.py
+fix_indexes.py
+
+# Documentation
+*.md
+MEMORY_COMPARISON.md
+
+# Output files
+*.png
+output.txt
